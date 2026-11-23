@@ -51,4 +51,13 @@ export class PaymentController {
 }
 ```
 
+## Writing handlers
+
+- A watched address (a wallet, or a Solana Pay reference) makes the reader hand over **every** balance change of each transaction that names it: one `Transfer` per change (the payer's minus, the receiver's plus, the rent of a token account created on the way). For a payment to a merchant, keep `owner === merchant` and the expected `asset`; the same transaction comes as several events, so dedupe by `signature`.
+- A token payment names the merchant's token account, not always the merchant's wallet; the reader still routes it, because it also matches the owner of a changed token balance.
+- The reference of a payment: the second handler argument is the transaction as `getBlock` returned it; its keys are `transaction.message.accountKeys[].pubkey`. Register the merchants' wallets (few, stable), not one reference per payment.
+- A failed transaction (`meta.err` set) never gives a `Transfer`: its only balance change is the fee, which is not reported.
+- Amounts are signed base units (lamports, or token units of the mint's decimals). The fee payer's native amount excludes the fee.
+- Save the cursor in the `block` handler: it runs after every handler of the range.
+
 How it works: [docs/block-reader.md](docs/block-reader.md).
