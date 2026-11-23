@@ -6,7 +6,7 @@ import type { Type } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { Test } from "@nestjs/testing";
 import { EventPattern, Payload } from "@nestjs/microservices";
-import { CronExpression } from "@nestjs/schedule";
+import { CronExpression, SchedulerRegistry } from "@nestjs/schedule";
 
 import { BLOCK_EVENT, SOLANA_RPC, SolanaEventType } from "./solana.constants.js";
 import type { IBlockEvent, ILogEvent, ISolanaTransaction, ITransfer } from "./interfaces/index.js";
@@ -51,8 +51,10 @@ function fakeChain(head: bigint, blocks: Record<string, ISolanaTransaction[]>) {
     getSlot: () => ({ send: () => Promise.resolve(head) }),
     getFirstAvailableBlock: () => ({ send: () => Promise.resolve(0n) }),
     getBlocks: jest.fn((from: bigint, to: bigint) => ({ send: () => Promise.resolve(slotsOf(from, to)) })),
+    // null: a block the node does not return
     getBlock: jest.fn((slot: bigint) => ({
-      send: () => Promise.resolve({ transactions: blocks[String(slot)] ?? [] }),
+      send: (): Promise<{ transactions: ISolanaTransaction[] } | null> =>
+        Promise.resolve({ transactions: blocks[String(slot)] ?? [] }),
     })),
   };
   return rpc;
@@ -131,12 +133,46 @@ class GrowingController {
   }
 }
 
-// The first of two handlers of one pattern always fails
+// A handler of the merchant's transfers that fails while `failing` is set: by a rejection, or by a synchronous throw
+@Injectable()
+class Failure {
+  public failing: "reject" | "throw" | null = "reject";
+}
+
 @Controller()
 class FailingController {
+  constructor(private readonly failure: Failure) {}
+
   @EventPattern({ contractType: ContractType.MERCHANT, eventName: SolanaEventType.TRANSFER })
   public merchant(): Promise<void> {
-    return Promise.reject(new Error("handler failed"));
+    if (this.failure.failing === "throw") {
+      throw new Error("handler threw");
+    }
+    return this.failure.failing === "reject" ? Promise.reject(new Error("handler failed")) : Promise.resolve();
+  }
+}
+
+// The app shuts down while the first transfer is handled
+@Controller()
+class DestroyingController {
+  constructor(
+    private readonly solanaService: SolanaService,
+    private readonly received: Received,
+  ) {}
+
+  @EventPattern({ contractType: ContractType.MERCHANT, eventName: SolanaEventType.TRANSFER })
+  public merchant(@Payload() event: ILogEvent<ITransfer>): void {
+    this.received.log.push(`destroy at ${event.args.signature} ${event.args.owner}`);
+    this.solanaService.destroy();
+  }
+}
+
+// A block handler that fails, as a cursor save with the database down
+@Controller()
+class FailingBlockController {
+  @EventPattern({ eventName: BLOCK_EVENT })
+  public block(): Promise<void> {
+    return Promise.reject(new Error("cursor not saved"));
   }
 }
 
@@ -151,7 +187,7 @@ async function reader(
       ConfigModule.forRoot({ ignoreEnvFile: true }),
       SolanaModule.register({ fromSlot, chunkSize, debug: false, cron: CronExpression.EVERY_HOUR }),
     ],
-    providers: [Received],
+    providers: [Received, Failure],
     controllers,
   })
     .overrideProvider(SOLANA_RPC)
@@ -160,7 +196,7 @@ async function reader(
   const logger = module.get(Logger);
   jest.spyOn(logger, "log").mockImplementation(() => undefined);
   const error = jest.spyOn(logger, "error").mockImplementation(() => undefined);
-  return { service: module.get(SolanaService), received: module.get(Received), error };
+  return { service: module.get(SolanaService), received: module.get(Received), error, module };
 }
 
 describe("SolanaService routing", function () {
@@ -340,30 +376,105 @@ describe("SolanaService routing", function () {
     ]);
   });
 
-  it("logs a failing handler and still runs the other handlers and moves the cursor", async function () {
+  it.each([
+    ["rejects", "reject"],
+    ["throws synchronously", "throw"],
+  ] as const)(
+    "a handler that %s: the others still run, the cursor stays, the next run delivers the range again",
+    async function (_how, failing) {
+      const rpc = fakeChain(10n, { 5: [solTransfer("s1", PAYER, [MERCHANT], 1000n)] });
+      const { service, received, error, module } = await reader(rpc, [FailingController, TypedController]);
+      module.get(Failure).failing = failing;
+      service.updateRegistry({ contractType: ContractType.MERCHANT, contractAddress: [MERCHANT] });
+
+      const failed = await service.listen().catch((e: Error) => e.message);
+      const cursorAfterFailure = service.getLastProcessedSlot();
+      // the handler recovers (the database is back): the same range is delivered again and the cursor moves
+      module.get(Failure).failing = null;
+      await service.listen();
+
+      expect(failed).toEqual("A handler failed in slots 1..10: the range is read again on the next run");
+      expect(error).toHaveBeenCalledWith(
+        new Error(failing === "throw" ? "handler threw" : "handler failed"),
+        expect.any(String),
+      );
+      expect(cursorAfterFailure).toEqual(-1n);
+      expect(received.log).toEqual([
+        `MERCHANT s1 ${PAYER}`,
+        `MERCHANT s1 ${MERCHANT}`,
+        `MERCHANT s1 ${PAYER}`,
+        `MERCHANT s1 ${MERCHANT}`,
+      ]);
+      expect(service.getLastProcessedSlot()).toEqual(10n);
+    },
+  );
+
+  it("keeps the cursor when the block handler (the cursor save) fails", async function () {
     const rpc = fakeChain(10n, { 5: [solTransfer("s1", PAYER, [MERCHANT], 1000n)] });
-    const { service, received, error } = await reader(rpc, [FailingController, TypedController]);
+    const { service } = await reader(rpc, [TypedController, FailingBlockController]);
     service.updateRegistry({ contractType: ContractType.MERCHANT, contractAddress: [MERCHANT] });
 
-    await service.listen();
+    const failed = await service.listen().catch((e: Error) => e.message);
 
-    expect(received.log).toEqual([`MERCHANT s1 ${PAYER}`, `MERCHANT s1 ${MERCHANT}`]);
-    expect(error).toHaveBeenCalledWith(new Error("handler failed"), expect.any(String));
-    expect(service.getLastProcessedSlot()).toEqual(10n);
+    expect(failed).toEqual("The block handler failed for slot 10: the range is read again on the next run");
+    expect(service.getLastProcessedSlot()).toEqual(-1n);
   });
 
-  it("keeps the cursor when the node fails, and reads the same range on the next run", async function () {
-    const rpc = fakeChain(10n, { 5: [solTransfer("s1", PAYER, [MERCHANT], 1000n)] });
-    rpc.getBlock.mockImplementationOnce(() => ({ send: () => Promise.reject(new Error("node down")) }));
+  it("delivers nothing when the node fails in the middle of a range, and the whole range on the next run", async function () {
+    const rpc = fakeChain(10n, {
+      5: [solTransfer("s1", PAYER, [MERCHANT], 1n)],
+      7: [solTransfer("s2", PAYER, [MERCHANT], 2n)],
+    });
+    // the first block is read, the second fails (a 429 of a public node)
+    rpc.getBlock
+      .mockImplementationOnce(() => ({
+        send: () => Promise.resolve({ transactions: [solTransfer("s1", PAYER, [MERCHANT], 1n)] }),
+      }))
+      .mockImplementationOnce(() => ({ send: () => Promise.reject(new Error("429 Too Many Requests")) }));
     const { service, received } = await reader(rpc, [RecordingController]);
     service.updateRegistry({ contractType: ContractType.MERCHANT, contractAddress: [MERCHANT] });
 
     const failed = await service.listen().catch((e: Error) => e.message);
-    const cursorAfterFailure = service.getLastProcessedSlot();
+    const deliveredAfterFailure = [...received.log];
     await service.listen();
 
-    expect(failed).toEqual("node down");
-    expect(cursorAfterFailure).toEqual(-1n);
-    expect(received.log).toEqual([`s1 ${PAYER} -1000`, `s1 ${MERCHANT} 1000`, "block 10"]);
+    expect(failed).toEqual("429 Too Many Requests");
+    expect(deliveredAfterFailure).toEqual([]);
+    expect(received.log).toEqual([
+      `s1 ${PAYER} -1`,
+      `s1 ${MERCHANT} 1`,
+      `s2 ${PAYER} -2`,
+      `s2 ${MERCHANT} 2`,
+      "block 10",
+    ]);
+  });
+
+  it("stops at a block the node does not return instead of reading past it", async function () {
+    const rpc = fakeChain(10n, { 5: [solTransfer("s1", PAYER, [MERCHANT], 1n)] });
+    rpc.getBlock.mockImplementationOnce(() => ({ send: () => Promise.resolve(null) }));
+    const { service, received } = await reader(rpc, [RecordingController]);
+    service.updateRegistry({ contractType: ContractType.MERCHANT, contractAddress: [MERCHANT] });
+
+    const failed = await service.listen().catch((e: Error) => e.message);
+
+    expect(failed).toEqual("Block 5 is not available on the node");
+    expect(received.log).toEqual([]);
+    expect(service.getLastProcessedSlot()).toEqual(-1n);
+  });
+
+  it("after destroy: the cron job is gone, a run stops before its next handler and keeps the cursor", async function () {
+    const rpc = fakeChain(10n, {
+      5: [solTransfer("s1", PAYER, [MERCHANT], 1n)],
+      7: [solTransfer("s2", PAYER, [MERCHANT], 2n)],
+    });
+    const { service, received, module } = await reader(rpc, [DestroyingController]);
+    service.init();
+    service.updateRegistry({ contractType: ContractType.MERCHANT, contractAddress: [MERCHANT] });
+
+    await service.listen();
+
+    expect(received.log).toEqual([`destroy at s1 ${PAYER}`]);
+    expect(module.get(SchedulerRegistry).getCronJobs().size).toEqual(0);
+    expect(service.getLastProcessedSlot()).toEqual(-1n);
   });
 });

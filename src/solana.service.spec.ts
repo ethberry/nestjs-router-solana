@@ -63,11 +63,17 @@ class TestController {
 }
 
 // A started reader from `fromSlot` (at "confirmed", to keep the test short), watching the given addresses
-async function startReader(fromSlot: bigint, watch: Partial<Record<ContractType, string[]>>) {
+// at "confirmed" to keep the tests short; `defaultCommitment`: no commitment option, the module's default (finalized)
+async function startReader(
+  fromSlot: bigint,
+  watch: Partial<Record<ContractType, string[]>>,
+  defaultCommitment = false,
+) {
+  const options = { fromSlot, debug: true, cron: CronExpression.EVERY_SECOND };
   const module = await Test.createTestingModule({
     imports: [
       ConfigModule.forRoot({ ignoreEnvFile: true, load: [() => ({ SOLANA_RPC_URL: RPC_URL })] }),
-      SolanaModule.register({ fromSlot, commitment: "confirmed", debug: true, cron: CronExpression.EVERY_SECOND }),
+      SolanaModule.register(defaultCommitment ? options : { ...options, commitment: "confirmed" }),
     ],
     providers: [Received],
     controllers: [TestController],
@@ -143,10 +149,25 @@ describe("SolanaService on the local node", function () {
     const lastSlot = await send(payer, [transfer]);
     await waitFor(() => reader.received.lastSlot >= lastSlot);
 
-    expect(reader.received.transfers.MERCHANT).toEqual([
-      expect.objectContaining({ owner: payer.address, asset: mint, amount: -5_000_000n }),
-      expect.objectContaining({ owner: merchant.address, asset: mint, amount: 5_000_000n }),
+    // the order of the changes inside one transaction is the node's
+    const changes = reader.received.transfers.MERCHANT.map(t => `${t.owner} ${t.asset} ${t.amount}`).sort();
+    expect(changes).toEqual([`${payer.address} ${mint} -5000000`, `${merchant.address} ${mint} 5000000`].sort());
+  });
+
+  it("by default reads at finalized: a transfer arrives once its slot is finalized", async function () {
+    const [payer, merchant] = await Promise.all([fundedPayer(), generateKeyPairSigner()]);
+    const reader = await startReader(await currentSlot(), { MERCHANT: [merchant.address] }, true);
+    module = reader.module;
+
+    const sentAt = await send(payer, [transferSol(payer, merchant.address, SOL), memo("finalized")]);
+    await waitFor(() => reader.received.lastSlot >= sentAt);
+    const finalized = await rpc.getSlot({ commitment: "finalized" }).send();
+
+    expect(reader.received.transfers.MERCHANT.filter(t => t.owner === merchant.address).map(t => t.memo)).toEqual([
+      ["finalized"],
     ]);
+    // the reader never went past the finalized slot
+    expect(reader.received.lastSlot <= finalized).toEqual(true);
   });
 
   it("resumes after a restart from the saved cursor: nothing lost, nothing read twice", async function () {

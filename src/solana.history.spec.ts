@@ -15,8 +15,7 @@ const FIRST_AVAILABLE = 50n;
 const CURSOR = 10n;
 
 describe("SolanaService with pruned history", function () {
-  // (from, to): the range asked for
-  const getBlocks = jest.fn((_from: bigint, _to: bigint) => ({ send: () => Promise.resolve([] as bigint[]) }));
+  const getBlocks = jest.fn(() => ({ send: () => Promise.resolve([] as bigint[]) }));
   const rpc = {
     getSlot: () => ({ send: () => Promise.resolve(HEAD) }),
     getFirstAvailableBlock: () => ({ send: () => Promise.resolve(FIRST_AVAILABLE) }),
@@ -27,7 +26,7 @@ describe("SolanaService with pruned history", function () {
     getBlocks.mockClear();
   });
 
-  it("reports the slots it can no longer read and continues from the first available one", async function () {
+  it("stops at slots the node no longer has instead of skipping them, and keeps the cursor", async function () {
     const module = await Test.createTestingModule({
       imports: [
         ConfigModule.forRoot({ ignoreEnvFile: true }),
@@ -37,20 +36,20 @@ describe("SolanaService with pruned history", function () {
       .overrideProvider(SOLANA_RPC)
       .useValue(rpc)
       .compile();
-    const error = jest.spyOn(module.get(Logger), "error").mockImplementation(() => undefined);
+    jest.spyOn(module.get(Logger), "log").mockImplementation(() => undefined);
     const service = module.get(SolanaService);
     service.updateRegistry({
       contractType: "WATCHED",
       contractAddress: ["Watched111111111111111111111111111111111111"],
     });
 
-    await service.listen();
+    const failed = await service.listen().catch((e: Error) => e.message);
 
-    expect(error).toHaveBeenCalledWith(
-      `Slots ${CURSOR}..${FIRST_AVAILABLE - 1n} are no longer on the node; their transfers are not read`,
-      expect.any(String),
+    expect(failed).toEqual(
+      `Slots ${CURSOR}..${FIRST_AVAILABLE - 1n} are no longer on the node: reading stops here. Read them from a node ` +
+        `with full history, or move the cursor (fromSlot) on purpose.`,
     );
-    expect(getBlocks.mock.calls[0].slice(0, 2)).toEqual([FIRST_AVAILABLE, HEAD]);
-    expect(service.getLastProcessedSlot()).toEqual(HEAD);
+    expect(getBlocks).not.toHaveBeenCalled();
+    expect(service.getLastProcessedSlot()).toEqual(-1n);
   });
 });
