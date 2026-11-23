@@ -48,7 +48,7 @@ function fakeChain(head: bigint, blocks: Record<string, ISolanaTransaction[]>) {
       .map(BigInt)
       .filter(slot => slot >= from && slot <= to);
   const rpc = {
-    getSlot: () => ({ send: () => Promise.resolve(head) }),
+    getSlot: jest.fn(() => ({ send: () => Promise.resolve(head) })),
     getFirstAvailableBlock: () => ({ send: () => Promise.resolve(0n) }),
     getBlocks: jest.fn((from: bigint, to: bigint) => ({ send: () => Promise.resolve(slotsOf(from, to)) })),
     // null: a block the node does not return
@@ -380,7 +380,7 @@ describe("SolanaService routing", function () {
     ["rejects", "reject"],
     ["throws synchronously", "throw"],
   ] as const)(
-    "a handler that %s: the others still run, the cursor stays, the next run delivers the range again",
+    "a handler that %s: the other handlers of the event run, the run stops there, the next run starts the range over",
     async function (_how, failing) {
       const rpc = fakeChain(10n, { 5: [solTransfer("s1", PAYER, [MERCHANT], 1000n)] });
       const { service, received, error, module } = await reader(rpc, [FailingController, TypedController]);
@@ -388,8 +388,9 @@ describe("SolanaService routing", function () {
       service.updateRegistry({ contractType: ContractType.MERCHANT, contractAddress: [MERCHANT] });
 
       const failed = await service.listen().catch((e: Error) => e.message);
+      const deliveredInFailedRun = [...received.log];
       const cursorAfterFailure = service.getLastProcessedSlot();
-      // the handler recovers (the database is back): the same range is delivered again and the cursor moves
+      // the handler recovers (the database is back): the range comes again from its start, in order
       module.get(Failure).failing = null;
       await service.listen();
 
@@ -398,13 +399,10 @@ describe("SolanaService routing", function () {
         new Error(failing === "throw" ? "handler threw" : "handler failed"),
         expect.any(String),
       );
+      // the failing event's other handler ran; the merchant's change, after it, waited
+      expect(deliveredInFailedRun).toEqual([`MERCHANT s1 ${PAYER}`]);
       expect(cursorAfterFailure).toEqual(-1n);
-      expect(received.log).toEqual([
-        `MERCHANT s1 ${PAYER}`,
-        `MERCHANT s1 ${MERCHANT}`,
-        `MERCHANT s1 ${PAYER}`,
-        `MERCHANT s1 ${MERCHANT}`,
-      ]);
+      expect(received.log).toEqual([`MERCHANT s1 ${PAYER}`, `MERCHANT s1 ${PAYER}`, `MERCHANT s1 ${MERCHANT}`]);
       expect(service.getLastProcessedSlot()).toEqual(10n);
     },
   );
@@ -460,6 +458,49 @@ describe("SolanaService routing", function () {
     expect(failed).toEqual("Block 5 is not available on the node");
     expect(received.log).toEqual([]);
     expect(service.getLastProcessedSlot()).toEqual(-1n);
+  });
+
+  it("runs one range at a time: a second call while a run is going returns at once", async function () {
+    const rpc = fakeChain(10n, { 5: [solTransfer("s1", PAYER, [MERCHANT], 1n)] });
+    const { service, received } = await reader(rpc, [RecordingController]);
+    service.updateRegistry({ contractType: ContractType.MERCHANT, contractAddress: [MERCHANT] });
+
+    await Promise.all([service.listen(), service.listen()]);
+
+    expect(rpc.getSlot).toHaveBeenCalledTimes(1);
+    expect(received.log).toEqual([`s1 ${PAYER} -1`, `s1 ${MERCHANT} 1`, "block 10"]);
+  });
+
+  it("after failed runs skips the next ticks, doubling the pause, and logs every failure", async function () {
+    const rpc = fakeChain(10n, { 5: [solTransfer("s1", PAYER, [MERCHANT], 1n)] });
+    const { service, error, module } = await reader(rpc, [FailingController]);
+    service.updateRegistry({ contractType: ContractType.MERCHANT, contractAddress: [MERCHANT] });
+    service.init();
+    const job = [...module.get(SchedulerRegistry).getCronJobs().values()][0];
+    const runFailures = () => error.mock.calls.filter(([message]) => String(message).startsWith("Run failed"));
+    // a tick that starts a run, and the state after it
+    const tick = async (failuresAfter: number) => {
+      void job.fireOnTick();
+      while (runFailures().length < failuresAfter) {
+        await new Promise(resolve => setImmediate(resolve));
+      }
+    };
+
+    await tick(1); // run 1 fails: skip 1 tick
+    await tick(1); // skipped
+    await tick(2); // run 2 fails: skip 3 ticks
+    await tick(2);
+    await tick(2);
+    await tick(2); // skipped three times
+    await tick(3); // run 3
+
+    expect(rpc.getSlot).toHaveBeenCalledTimes(3);
+    expect(runFailures().map(([message]) => String(message).split(":")[0])).toEqual([
+      "Run failed 1 time(s) in a row, next try in 2 tick(s)",
+      "Run failed 2 time(s) in a row, next try in 4 tick(s)",
+      "Run failed 3 time(s) in a row, next try in 8 tick(s)",
+    ]);
+    service.destroy();
   });
 
   it("after destroy: the cron job is gone, a run stops before its next handler and keeps the cursor", async function () {

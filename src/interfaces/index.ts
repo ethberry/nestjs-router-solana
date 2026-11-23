@@ -56,7 +56,8 @@ export interface ISolanaTransaction {
     };
   };
   meta: {
-    err: unknown;
+    // null on success; some RPCs leave it out
+    err?: unknown;
     fee: bigint | number;
     preBalances: ReadonlyArray<bigint | number>;
     postBalances: ReadonlyArray<bigint | number>;

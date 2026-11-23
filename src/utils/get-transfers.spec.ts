@@ -61,6 +61,14 @@ describe("getTransfers", function () {
     expect(transfer.memo).toEqual(["v1", "from a program"]);
   });
 
+  it("reports the transfers of a transaction whose RPC left `err` out", function () {
+    const transaction = tx({ err: undefined, ...solPayment }, [PAYER, MERCHANT]);
+
+    const transfers = getTransfers(transaction);
+
+    expect(transfers.map(t => t.amount)).toEqual([-1_000_000n, 1_000_000n]);
+  });
+
   it("reports nothing for a transaction that only paid the fee", function () {
     const transaction = tx({ preBalances: [10_000_000n], postBalances: [10_000_000n - FEE] }, [PAYER]);
 

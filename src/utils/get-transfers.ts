@@ -11,7 +11,9 @@ const SOL_DECIMALS = 9;
 // The fee is not a transfer: it is added back to the fee payer (account 0). A failed transaction moved nothing.
 export function getTransfers(tx: ISolanaTransaction): Array<Omit<ITransfer, "slot" | "signature">> {
   const { meta, transaction } = tx;
-  if (meta?.err !== null) {
+  // `err` is null for a successful transaction; an RPC may leave it out, which is not a failure
+  const failed = meta?.err !== null && meta?.err !== undefined;
+  if (!meta || failed) {
     return [];
   }
 

@@ -22,6 +22,10 @@ import type {
 } from "./interfaces/index.js";
 
 const blockPattern = { eventName: BLOCK_EVENT };
+// slots per run: about 40 s of chain, also the most a failed run reads again
+const DEFAULT_CHUNK_SIZE = 100;
+// the longest pause after failed runs, in cron ticks
+const MAX_SKIPPED_TICKS = 63;
 
 // an event on its way to the handlers
 interface IRoutedEvent {
@@ -36,6 +40,9 @@ export class SolanaService {
   private job?: CronJob;
   private running = false;
   private destroyed = false;
+  // failed runs in a row, and the cron ticks still to skip after them
+  private failures = 0;
+  private skippedTicks = 0;
   private lastProcessedSlot = -1n;
   private registry: IContractOptions[] = [];
 
@@ -52,81 +59,104 @@ export class SolanaService {
     protected schedulerRegistry: SchedulerRegistry,
   ) {}
 
+  // A run per cron tick. After a failed run the next ones are skipped, doubling (1, 3, 7… up to MAX_SKIPPED_TICKS
+  // ticks), so a handler that keeps failing on one event does not hammer the node; every failure is logged with its
+  // count. A successful run resets it.
   public init(): void {
     this.job = new CronJob(this.options.cron, async () => {
-      // if the previous run is still going - skip
-      if (this.running) {
+      if (this.skippedTicks > 0) {
+        this.skippedTicks--;
         return;
       }
-      this.running = true;
-      await this.listen().catch(e => this.loggerService.error(e, `${SolanaService.name}-${this.instanceId}`));
-      this.running = false;
+      await this.listen().then(
+        () => {
+          this.failures = 0;
+        },
+        (e: unknown) => {
+          this.failures++;
+          this.skippedTicks = Math.min(2 ** this.failures - 1, MAX_SKIPPED_TICKS);
+          this.loggerService.error(
+            `Run failed ${this.failures} time(s) in a row, next try in ${this.skippedTicks + 1} tick(s): ${String(e)}`,
+            `${SolanaService.name}-${this.instanceId}`,
+          );
+        },
+      );
     });
     this.schedulerRegistry.addCronJob(`solanaListener_${this.instanceId}`, this.job);
     this.job.start();
   }
 
   // Reads the next range of slots up to the head at the commitment and hands every transfer to the handlers, one at a
-  // time in chain order. The whole range is read before any handler runs, so a node error delivers nothing. The cursor
-  // moves only when every handler of the range succeeded; then the block event reports it. Otherwise the run throws
-  // and the next run reads the same range again: handlers must be idempotent (by signature).
+  // time in chain order. The whole range is read before any handler runs, so a node error delivers nothing. The first
+  // failing handler stops the run: it throws, the cursor stays, and the next run reads the same range again from its
+  // start, so the order holds and handlers must be idempotent (by signature). Only one run at a time: a call while a
+  // run is going returns at once.
   public async listen(): Promise<void> {
-    if (!this.registry.length) {
+    if (this.running) {
       return;
     }
-
-    const commitment = this.options.commitment ?? "finalized";
-    const head = await this.rpc.getSlot({ commitment }).send();
-    const fromSlot = this.options.fromSlot;
-    if (fromSlot > head) {
-      return;
-    }
-
-    // the node keeps only recent blocks; getBlocks below the first one silently starts at it
-    const firstAvailable = await this.rpc.getFirstAvailableBlock().send();
-    if (fromSlot < firstAvailable) {
-      throw new Error(
-        `Slots ${fromSlot}..${firstAvailable - 1n} are no longer on the node: reading stops here. Read them from a node ` +
-          `with full history, or move the cursor (fromSlot) on purpose.`,
-      );
-    }
-
-    const chunkSize = BigInt(this.options.chunkSize ?? 1000);
-    const toSlot = head < fromSlot + chunkSize - 1n ? head : fromSlot + chunkSize - 1n;
-    // only the slots that have a block: a leader may skip its slot
-    const slots = await this.rpc.getBlocks(fromSlot, toSlot, { commitment }).send();
-
-    // A handler can add to the registry while the range is processed (a deploy adds a new address): after a pass and all
-    // its handlers, the range is read again for the addresses that appeared during it, until none appears. A
-    // transaction goes to a contract type once per range, also when it names several of its addresses.
-    const read = new Set<string>();
-    const delivered = new Set<string>();
-    let failed = false;
-    let pass = this.notRead(read);
-    while (pass.length) {
-      const events = await this.readRange(slots, commitment, pass, delivered);
-      for (const event of events) {
-        if (this.destroyed) {
-          return;
-        }
-        failed = !(await this.call(event)) || failed;
+    this.running = true;
+    try {
+      if (!this.registry.length) {
+        return;
       }
-      pass = this.notRead(read);
-    }
 
-    if (failed) {
-      throw new Error(`A handler failed in slots ${fromSlot}..${toSlot}: the range is read again on the next run`);
+      const commitment = this.options.commitment ?? "finalized";
+      const head = await this.rpc.getSlot({ commitment }).send();
+      const fromSlot = this.options.fromSlot;
+      if (fromSlot > head) {
+        return;
+      }
+
+      const chunkSize = BigInt(this.options.chunkSize ?? DEFAULT_CHUNK_SIZE);
+      const toSlot = head < fromSlot + chunkSize - 1n ? head : fromSlot + chunkSize - 1n;
+      // only the slots that have a block: a leader may skip its slot
+      const slots = await this.rpc.getBlocks(fromSlot, toSlot, { commitment }).send();
+
+      // A node that keeps only recent blocks answers getBlocks below its first one from that first one, silently. A node
+      // with full history (a BigTable-backed provider) returns the older slots; then nothing is missing.
+      const firstAvailable = await this.rpc.getFirstAvailableBlock().send();
+      if (fromSlot < firstAvailable && !(slots.length && slots[0] < firstAvailable)) {
+        throw new Error(
+          `Slots ${fromSlot}..${firstAvailable - 1n} are no longer on the node: reading stops here. Read them from a node ` +
+            `with full history, or move the cursor (fromSlot) on purpose.`,
+        );
+      }
+
+      // A handler can add to the registry while the range is processed (a deploy adds a new address): after a pass and all
+      // its handlers, the range is read again for the addresses that appeared during it, until none appears. A
+      // transaction goes to a contract type once per range, also when it names several of its addresses.
+      const read = new Set<string>();
+      const delivered = new Set<string>();
+      let pass = this.notRead(read);
+      while (pass.length) {
+        const events = await this.readRange(slots, commitment, pass, delivered);
+        for (const event of events) {
+          if (this.destroyed) {
+            return;
+          }
+          if (!(await this.call(event))) {
+            throw new Error(
+              `A handler failed in slots ${fromSlot}..${toSlot}: the range is read again on the next run`,
+            );
+          }
+        }
+        pass = this.notRead(read);
+      }
+
+      if (this.destroyed) {
+        return;
+      }
+      const args: IBlockEvent = { slot: toSlot };
+      const blockEvent = { pattern: blockPattern, description: { name: BLOCK_EVENT, args }, context: args };
+      if (this.hasHandler(blockPattern) && !(await this.call(blockEvent))) {
+        throw new Error(`The block handler failed for slot ${toSlot}: the range is read again on the next run`);
+      }
+      this.lastProcessedSlot = toSlot;
+      this.options.fromSlot = toSlot + 1n;
+    } finally {
+      this.running = false;
     }
-    if (this.destroyed) {
-      return;
-    }
-    const args: IBlockEvent = { slot: toSlot };
-    const blockEvent = { pattern: blockPattern, description: { name: BLOCK_EVENT, args }, context: args };
-    if (this.hasHandler(blockPattern) && !(await this.call(blockEvent))) {
-      throw new Error(`The block handler failed for slot ${toSlot}: the range is read again on the next run`);
-    }
-    this.lastProcessedSlot = toSlot;
-    this.options.fromSlot = toSlot + 1n;
   }
 
   public updateRegistry(contract: IContractOptions): void {
