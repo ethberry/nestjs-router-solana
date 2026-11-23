@@ -116,6 +116,21 @@ class RegisteringController {
   }
 }
 
+// A merchant transfer adds the shop to the merchant's own contract type, and records the transfer
+@Controller()
+class GrowingController {
+  constructor(
+    private readonly solanaService: SolanaService,
+    private readonly received: Received,
+  ) {}
+
+  @EventPattern({ contractType: ContractType.MERCHANT, eventName: SolanaEventType.TRANSFER })
+  public merchant(@Payload() event: ILogEvent<ITransfer>): void {
+    this.received.log.push(`MERCHANT ${event.args.signature} ${event.args.owner}`);
+    this.solanaService.updateRegistry({ contractType: ContractType.MERCHANT, contractAddress: [SHOP] });
+  }
+}
+
 // The first of two handlers of one pattern always fails
 @Controller()
 class FailingController {
@@ -183,6 +198,17 @@ describe("SolanaService routing", function () {
     const rpc = fakeChain(10n, { 5: [solTransfer("s1", PAYER, [MERCHANT, SHOP], 1000n)] });
     const { service, received } = await reader(rpc, [TypedController]);
     service.updateRegistry({ contractType: ContractType.MERCHANT, contractAddress: [MERCHANT, SHOP] });
+
+    await service.listen();
+
+    expect(received.log).toEqual([`MERCHANT s1 ${PAYER}`, `MERCHANT s1 ${MERCHANT}`, `MERCHANT s1 ${SHOP}`]);
+  });
+
+  it("does not deliver a transaction again when an address of its contract type is added during the range", async function () {
+    // the merchant's transfer names the shop too; its handler then adds the shop to the merchant's contract type
+    const rpc = fakeChain(10n, { 5: [solTransfer("s1", PAYER, [MERCHANT, SHOP], 1000n)] });
+    const { service, received } = await reader(rpc, [GrowingController]);
+    service.updateRegistry({ contractType: ContractType.MERCHANT, contractAddress: [MERCHANT] });
 
     await service.listen();
 
