@@ -16,7 +16,7 @@ Reads Solana slot by slot and hands the transfers of watched addresses to Nest c
 ## Configuration
 
 - `SOLANA_RPC_URL`: the JSON-RPC endpoint.
-- Module options (`ISolanaModuleOptions`): `fromSlot` (where to start), `commitment` (`finalized` by default), `chunkSize` (slots per run, default 100; also the most a failed run reads again), `cron`, `debug`. After a failed run the next cron ticks are skipped, doubling up to 63.
+- Module options (`ISolanaModuleOptions`): `fromSlot` (where to start), `commitment` (`finalized` by default), `chunkSize` (slots per run, default 100; also the most a failed run reads again), `cron`, `debug`. After a failed run the next cron ticks are skipped, doubling up to 15.
 
 ## Example
 

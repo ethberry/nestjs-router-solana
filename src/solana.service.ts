@@ -25,7 +25,8 @@ const blockPattern = { eventName: BLOCK_EVENT };
 // slots per run: about 40 s of chain, also the most a failed run reads again
 const DEFAULT_CHUNK_SIZE = 100;
 // the longest pause after failed runs, in cron ticks
-const MAX_SKIPPED_TICKS = 63;
+// (a node outage is retried at least every 16 ticks once it is over)
+const MAX_SKIPPED_TICKS = 15;
 
 // an event on its way to the handlers
 interface IRoutedEvent {
@@ -64,6 +65,10 @@ export class SolanaService {
   // count. A successful run resets it.
   public init(): void {
     this.job = new CronJob(this.options.cron, async () => {
+      // a run the app started itself is still going: not a run of this tick, it changes nothing
+      if (this.running) {
+        return;
+      }
       if (this.skippedTicks > 0) {
         this.skippedTicks--;
         return;
