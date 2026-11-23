@@ -121,22 +121,31 @@ export class SolanaService {
     // only the slots that have a block: a leader may skip its slot
     const slots = await this.rpc.getBlocks(fromSlot, toSlot, { commitment }).send();
 
-    for (const slot of slots) {
-      const block = await this.rpc
-        .getBlock(slot, {
-          commitment,
-          encoding: "jsonParsed",
-          transactionDetails: "full",
-          maxSupportedTransactionVersion: 0,
-          rewards: false,
-        })
-        .send();
-      for (const tx of block?.transactions ?? []) {
-        this.route(slot, tx);
+    // A handler can add to the registry while the range is processed (a deploy adds a new address): after a pass and all
+    // its handlers, the range is read again for the addresses that appeared during it, until none appears. A
+    // transaction goes to a contract type once per range, also when it names several of its addresses.
+    const read = new Set<string>();
+    const delivered = new Set<string>();
+    let pass = this.notRead(read);
+    while (pass.length) {
+      for (const slot of slots) {
+        const block = await this.rpc
+          .getBlock(slot, {
+            commitment,
+            encoding: "jsonParsed",
+            transactionDetails: "full",
+            maxSupportedTransactionVersion: 0,
+            rewards: false,
+          })
+          .send();
+        for (const tx of block?.transactions ?? []) {
+          this.route(slot, tx, pass, delivered);
+        }
       }
+      await this.drained();
+      pass = this.notRead(read);
     }
 
-    await this.drained();
     this.lastProcessedSlot = toSlot;
     this.options.fromSlot = toSlot + 1n;
     await this.emitBlock(toSlot);
@@ -216,9 +225,22 @@ export class SolanaService {
     return from(["OK"]);
   }
 
+  // the part of the registry this range has not read yet: per entry, its addresses not read; marks them read
+  private notRead(read: Set<string>): IContractOptions[] {
+    const pass: IContractOptions[] = [];
+    for (const entry of this.registry) {
+      const contractAddress = entry.contractAddress.filter(address => !read.has(`${entry.contractType} ${address}`));
+      contractAddress.forEach(address => read.add(`${entry.contractType} ${address}`));
+      if (contractAddress.length) {
+        pass.push({ ...entry, contractAddress });
+      }
+    }
+    return pass;
+  }
+
   // A transaction that names a watched address (any account key, or the owner of a token balance it changes) goes,
-  // with all its transfers, to the handlers of that address's contractType: once per contractType
-  private route(slot: bigint, tx: ISolanaTransaction): void {
+  // with all its transfers, to the handlers of that address's contractType: once per contractType and range
+  private route(slot: bigint, tx: ISolanaTransaction, registry: IContractOptions[], delivered: Set<string>): void {
     const transfers = getTransfers(tx);
     if (!transfers.length) {
       return;
@@ -230,10 +252,12 @@ export class SolanaService {
     ]);
     const signature = tx.transaction.signatures[0];
 
-    for (const entry of this.registry) {
-      if (!entry.contractAddress.some(address => named.has(address))) {
+    for (const entry of registry) {
+      const key = `${entry.contractType} ${signature}`;
+      if (delivered.has(key) || !entry.contractAddress.some(address => named.has(address))) {
         continue;
       }
+      delivered.add(key);
       for (const transfer of transfers) {
         const args: ITransfer = { ...transfer, slot, signature };
         this.emit({
