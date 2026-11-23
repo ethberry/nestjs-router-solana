@@ -61,28 +61,32 @@ class TestController {
   }
 }
 
-describe("SolanaService on the local node", function () {
-  let module: TestingModule;
-  let received: Received;
-  let service: SolanaService;
+// A started reader from `fromSlot` (at "confirmed", to keep the test short), watching the given addresses
+async function startReader(fromSlot: bigint, watch: Partial<Record<ContractType, string[]>>) {
+  const module = await Test.createTestingModule({
+    imports: [
+      ConfigModule.forRoot({ ignoreEnvFile: true }),
+      SolanaModule.register({ fromSlot, commitment: "confirmed", debug: true, cron: CronExpression.EVERY_SECOND }),
+    ],
+    providers: [Received],
+    controllers: [TestController],
+  }).compile();
+  const service = module.get(SolanaService);
+  for (const [contractType, contractAddress] of Object.entries(watch)) {
+    service.updateRegistry({ contractType, contractAddress });
+  }
+  await module.init();
+  return { module, received: module.get(Received) };
+}
 
-  beforeEach(async function () {
-    const fromSlot = await rpc.getSlot({ commitment: "confirmed" }).send();
-    module = await Test.createTestingModule({
-      imports: [
-        ConfigModule.forRoot({ ignoreEnvFile: true }),
-        SolanaModule.register({ fromSlot, commitment: "confirmed", debug: true, cron: CronExpression.EVERY_SECOND }),
-      ],
-      providers: [Received],
-      controllers: [TestController],
-    }).compile();
-    received = module.get(Received);
-    service = module.get(SolanaService);
-    await module.init();
-  });
+const currentSlot = () => rpc.getSlot({ commitment: "confirmed" }).send();
+
+describe("SolanaService on the local node", function () {
+  let module: TestingModule | undefined;
 
   afterEach(async function () {
-    await module.close();
+    await module?.close();
+    module = undefined;
   });
 
   it("routes the transfers of every transaction that names a watched address", async function () {
@@ -92,9 +96,13 @@ describe("SolanaService on the local node", function () {
       generateKeyPairSigner(),
       generateKeyPairSigner(),
     ]);
-    service.updateRegistry({ contractType: ContractType.MERCHANT, contractAddress: [merchant.address] });
-    service.updateRegistry({ contractType: ContractType.ORDER, contractAddress: [reference.address] });
-    service.updateRegistry({ contractType: ContractType.FRESH, contractAddress: [fresh.address] });
+    const reader = await startReader(await currentSlot(), {
+      MERCHANT: [merchant.address],
+      ORDER: [reference.address],
+      FRESH: [fresh.address],
+    });
+    module = reader.module;
+    const { received } = reader;
 
     // 1 SOL with a memo to the merchant: payer -1 SOL, merchant +1 SOL
     await send(payer, [transferSol(payer, merchant.address, SOL), memo("order:1")]);
@@ -119,5 +127,47 @@ describe("SolanaService on the local node", function () {
       expect.objectContaining({ asset: mint, amount: 5_000_000n }),
     ]);
     expect(FRESH).toEqual([]);
+  });
+
+  it("routes a token transfer to the owner of an existing token account the transaction does not name", async function () {
+    const [payer, merchant] = await Promise.all([fundedPayer(), generateKeyPairSigner()]);
+    const mint = await createToken(payer, 10_000_000n);
+    const [createAta, transfer] = await transferToken(payer, mint, merchant.address, 5_000_000n);
+    // the merchant's token account exists before the reader starts
+    const createdAt = await send(payer, [createAta]);
+    const reader = await startReader(createdAt + 1n, { MERCHANT: [merchant.address] });
+    module = reader.module;
+
+    // the transfer names the merchant's token account, not the merchant
+    const lastSlot = await send(payer, [transfer]);
+    await waitFor(() => reader.received.lastSlot >= lastSlot);
+
+    expect(reader.received.transfers.MERCHANT).toEqual([
+      expect.objectContaining({ owner: payer.address, asset: mint, amount: -5_000_000n }),
+      expect.objectContaining({ owner: merchant.address, asset: mint, amount: 5_000_000n }),
+    ]);
+  });
+
+  it("resumes after a restart from the saved cursor: nothing lost, nothing read twice", async function () {
+    const [payer, merchant] = await Promise.all([fundedPayer(), generateKeyPairSigner()]);
+    const first = await startReader(await currentSlot(), { MERCHANT: [merchant.address] });
+    module = first.module;
+
+    const sentAt = await send(payer, [transferSol(payer, merchant.address, SOL), memo("before")]);
+    // the cursor the app would save: the block event after the range with the transfer
+    await waitFor(() => first.received.lastSlot >= sentAt);
+    const saved = first.received.lastSlot;
+    await first.module.close();
+    module = undefined;
+
+    // sent while the reader is down
+    const downAt = await send(payer, [transferSol(payer, merchant.address, SOL), memo("while down")]);
+
+    const second = await startReader(saved + 1n, { MERCHANT: [merchant.address] });
+    module = second.module;
+    await waitFor(() => second.received.lastSlot >= downAt);
+
+    const memos = second.received.transfers.MERCHANT.filter(t => t.owner === merchant.address).map(t => t.memo);
+    expect(memos).toEqual([["while down"]]);
   });
 });

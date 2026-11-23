@@ -36,4 +36,9 @@ An address becomes an account only with the rent-exempt minimum. A first transfe
 
 ## Tests
 
-`src/solana.service.spec.ts` runs against the node of `docker-compose.yml`: SOL with a memo, a failing transfer below rent, and a token transfer with a reference into a token account created in the same transaction, routed to a wallet, a reference and an address of the failing transfer. `src/utils/get-transfers.spec.ts` covers the balance arithmetic.
+- `src/solana.service.spec.ts`, against the node of `docker-compose.yml`:
+  - SOL with a memo, a failing transfer below rent, and a token transfer with a reference into a token account created in the same transaction, routed to a wallet, a reference and the address of the failing transfer;
+  - a token transfer into an existing token account, routed to its owner, whom the transaction does not name;
+  - a restart: a second reader started from the cursor of the first one's block event gets the transfer sent while it was down, and not the one already handled.
+- `src/solana.history.spec.ts` (stubbed RPC): a cursor older than the node's first available block is reported and reading goes on from that block.
+- `src/utils/get-transfers.spec.ts`: the balance arithmetic.
