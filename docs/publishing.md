@@ -16,6 +16,8 @@ How the package is built, what a published package contains, how a release is ma
 
 - Exact versions in `dependencies` / `devDependencies`; the lockfile is committed and installs use `npm ci`.
 - `@nestjs/*`, `rxjs` and `@solana/kit` are peers (one `^` range from the tested devDependency version): they hold shared state or are installed by the consuming app.
+- `cron` is a peer too: the reader's `CronJob` goes into `@nestjs/schedule`'s `SchedulerRegistry`, which pins its own `cron`; a pinned copy here would be a second one once `@nestjs/schedule` moves.
+- `exports` lists `types` first, as TypeScript resolves the first matching condition.
 
 ## Release
 
