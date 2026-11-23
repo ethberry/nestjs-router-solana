@@ -29,7 +29,7 @@ import {
   getTransferCheckedInstruction,
 } from "@solana-program/token";
 
-export const RPC_URL = process.env.SOLANA_RPC_URL ?? "http://localhost:8899";
+export const RPC_URL = process.env.SOLANA_RPC_URL ?? "http://localhost:8999";
 // the validator serves PubSub on the RPC port + 1
 const wsUrl = new URL(RPC_URL);
 wsUrl.protocol = wsUrl.protocol === "https:" ? "wss:" : "ws:";

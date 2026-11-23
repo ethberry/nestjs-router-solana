@@ -27,8 +27,10 @@ Each non-zero change is one `ITransfer`: `owner`, `asset` (`"native"` or the min
 
 - The registry (`updateRegistry({ contractType, contractAddress })`) maps watched addresses to a contract type; entries of the same type are merged.
 - A transaction goes to a contract type when one of its addresses is named in it: any account key, or the owner of a token balance it changes. Then **every** transfer of that transaction goes to the handlers of `{ contractType, eventName: "Transfer" }`, once per contract type. So a watched Solana Pay reference (a key that only appears in the account list) gets the whole payment, and a watched wallet also sees the payer's side.
+- Addresses are base58 and matched exactly: another letter case is another address.
+- A handler can register a new address while a range is processed (a deploy, a new user wallet). After a pass over the range and all its handlers, the range is read again for the addresses that appeared during it, until none appears; so the new address gets its transfers of the whole range, earlier slots included. A transaction goes to a contract type at most once per range, also when a later pass adds another of its addresses to that type.
 - The second handler argument is the transaction as `getBlock` returned it.
-- Handlers run one at a time, in chain order; a rejected handler is logged and does not stop the others.
+- Handlers run one at a time, in chain order; a rejected handler is logged and does not stop the others or the cursor. A pattern without a handler is logged.
 
 ## Account existence
 
@@ -41,4 +43,5 @@ An address becomes an account only with the rent-exempt minimum. A first transfe
   - a token transfer into an existing token account, routed to its owner, whom the transaction does not name;
   - a restart: a second reader started from the cursor of the first one's block event gets the transfer sent while it was down, and not the one already handled.
 - `src/solana.history.spec.ts` (stubbed RPC): a cursor older than the node's first available block is reported and reading goes on from that block.
+- `src/solana.routing.spec.ts` (a fake chain: the RPC stubbed with blocks built in the test): delivery and its args, unwatched and wrong-case addresses, one delivery per contract type, several contract types, registry merge, an address registered by a handler mid-range (whole range, once, no repeat when its type grows), the block event after the handlers with the range's last slot, the cursor without a block handler, an empty registry, a head behind the cursor, `chunkSize`, a failing handler, a node error that keeps the cursor.
 - `src/utils/get-transfers.spec.ts`: the balance arithmetic.

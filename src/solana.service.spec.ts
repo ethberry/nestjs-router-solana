@@ -1,4 +1,4 @@
-// Against the local Solana node (docker-compose.yml, service `solana`; SOLANA_RPC_URL, default http://localhost:8899).
+// Against the local Solana node of docker-compose.yml (SOLANA_RPC_URL, default http://localhost:8999).
 import { Controller, Injectable } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { Test } from "@nestjs/testing";
@@ -12,6 +12,7 @@ import type { IBlockEvent, ILogEvent, ITransfer } from "./interfaces/index.js";
 import { SolanaModule } from "./solana.module.js";
 import { SolanaService } from "./solana.service.js";
 import {
+  RPC_URL,
   SOL,
   createToken,
   fundedPayer,
@@ -65,7 +66,7 @@ class TestController {
 async function startReader(fromSlot: bigint, watch: Partial<Record<ContractType, string[]>>) {
   const module = await Test.createTestingModule({
     imports: [
-      ConfigModule.forRoot({ ignoreEnvFile: true }),
+      ConfigModule.forRoot({ ignoreEnvFile: true, load: [() => ({ SOLANA_RPC_URL: RPC_URL })] }),
       SolanaModule.register({ fromSlot, commitment: "confirmed", debug: true, cron: CronExpression.EVERY_SECOND }),
     ],
     providers: [Received],
