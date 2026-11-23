@@ -1,0 +1,12 @@
+# The local Solana node of the tests. Its own name and ports: it runs next to other EthBerry stands.
+services:
+  solana-node:
+    container_name: nestjs-solana-node
+    # Agave solana-test-validator (community image; there is no official one). Every start is a new ledger.
+    image: beeman/solana-test-validator:4.1.1
+    restart: "on-failure"
+    security_opt:
+      - seccomp=unconfined
+    ports:
+      - "8999:8899" # JSON-RPC (SOLANA_RPC_URL)
+      - "9000:8900" # WebSocket, on the RPC port + 1: the tests confirm their transactions through it
