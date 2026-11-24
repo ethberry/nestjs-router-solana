@@ -1,6 +1,6 @@
 # Block reader
 
-`SolanaService` reads Solana slot by slot and turns every transaction that names a watched address into `Transfer` events for Nest controllers (`@EventPattern({ contractType, eventName: "Transfer" })`). It is the Solana counterpart of `@ethberry/nestjs-viem`: the same module shape, registry and patterns.
+`SolanaService` reads Solana slot by slot and turns every transaction that names a watched address into `Transfer` events for Nest controllers (`@EventPattern({ contractType, eventName: "Transfer" })`). It is the Solana counterpart of `@ethberry/nestjs-router-eth`: the same module shape, registry and patterns.
 
 ## Configuration
 
@@ -9,7 +9,7 @@
   - `fromSlot`: the first slot to read; the app passes its saved cursor + 1.
   - `commitment`: `finalized` by default. `confirmed` is faster, but a confirmed slot can still be rolled back; use it only where a rolled-back transfer does no harm (tests).
   - `chunkSize`: slots per run (one `getBlocks` call), default 100 (about 40 s of chain). It is also the most a failed run reads again.
-  - `cron`: how often a run starts. `debug` is accepted for parity with nestjs-viem.
+  - `cron`: how often a run starts. `debug` is accepted for parity with nestjs-router-eth.
 
 ## Cycle (`listen`)
 

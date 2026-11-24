@@ -1,6 +1,6 @@
-# @ethberry/nestjs-solana
+# @ethberry/nestjs-router-solana
 
-Reads Solana slot by slot and hands the transfers of watched addresses to Nest controllers, the way `@ethberry/nestjs-viem` hands EVM logs.
+Reads Solana slot by slot and hands the transfers of watched addresses to Nest controllers, the way `@ethberry/nestjs-router-eth` hands EVM logs.
 
 ## Peers
 
