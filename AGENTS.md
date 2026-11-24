@@ -1,6 +1,6 @@
-# nestjs-solana
+# nestjs-router-solana
 
-`@ethberry/nestjs-solana`: a NestJS module that reads Solana block by block and routes the transfers of watched addresses to controllers (`@EventPattern`), the way `@ethberry/nestjs-viem` routes EVM logs. A single package, not a monorepo.
+`@ethberry/nestjs-router-solana`: a NestJS module that reads Solana block by block and routes the transfers of watched addresses to controllers (`@EventPattern`), the way `@ethberry/nestjs-router-eth` routes EVM logs. A single package, not a monorepo.
 
 ## Place in the package levels
 

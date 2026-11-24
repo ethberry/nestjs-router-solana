@@ -5,7 +5,7 @@
     "url": "https://ethberry.io/"
   },
   "bugs": {
-    "url": "https://github.com/ethberry/nestjs-solana/issues"
+    "url": "https://github.com/ethberry/nestjs-router-solana/issues"
   },
   "description": "Solana block reader for NestJS: routes transfers to controllers",
   "devDependencies": {
@@ -48,7 +48,7 @@
   "keywords": [],
   "license": "UNLICENSED",
   "main": "./dist/index.js",
-  "name": "@ethberry/nestjs-solana",
+  "name": "@ethberry/nestjs-router-solana",
   "type": "module",
   "peerDependencies": {
     "cron": "^4.4.0",
@@ -67,7 +67,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ethberry/nestjs-solana.git"
+    "url": "git+https://github.com/ethberry/nestjs-router-solana.git"
   },
   "scripts": {
     "build": "tsc",
