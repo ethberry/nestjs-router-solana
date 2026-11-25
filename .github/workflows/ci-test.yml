@@ -1,4 +1,4 @@
-# CI runs on Node.js 24.x
+# CI runs on Node.js 26.x
 name: CI Test
 
 on:
@@ -19,10 +19,10 @@ jobs:
       - name: Start the Solana node
         run: docker compose up -d --wait
 
-      - name: Use Node.js 24
+      - name: Use Node.js 26
         uses: actions/setup-node@v7
         with:
-          node-version: "24.x"
+          node-version: "26.x"
 
       - name: Install Packages
         run: npm ci
