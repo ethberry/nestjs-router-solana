@@ -7,9 +7,9 @@ import { ConfigModule } from "@nestjs/config";
 import { Test } from "@nestjs/testing";
 import { CronExpression } from "@nestjs/schedule";
 
-import { SOLANA_RPC } from "./solana.constants.js";
-import { SolanaModule } from "./solana.module.js";
-import { SolanaService } from "./solana.service.js";
+import { SOLANA_RPC } from "./solana-router.constants.js";
+import { SolanaRouterModule } from "./solana-router.module.js";
+import { SolanaRouterService } from "./solana-router.service.js";
 
 const HEAD = 100n;
 const FIRST_AVAILABLE = 50n;
@@ -26,19 +26,19 @@ async function reader(slots: bigint[]) {
   const module = await Test.createTestingModule({
     imports: [
       ConfigModule.forRoot({ ignoreEnvFile: true }),
-      SolanaModule.register({ fromSlot: CURSOR, debug: false, cron: CronExpression.EVERY_HOUR }),
+      SolanaRouterModule.register({ fromSlot: CURSOR, debug: false, cron: CronExpression.EVERY_HOUR }),
     ],
   })
     .overrideProvider(SOLANA_RPC)
     .useValue(rpc)
     .compile();
   jest.spyOn(module.get(Logger), "log").mockImplementation(() => undefined);
-  const service = module.get(SolanaService);
+  const service = module.get(SolanaRouterService);
   service.updateRegistry({ contractType: "WATCHED", contractAddress: ["Watched111111111111111111111111111111111111"] });
   return service;
 }
 
-describe("SolanaService with a cursor older than the node's first block", function () {
+describe("SolanaRouterService with a cursor older than the node's first block", function () {
   it("stops at slots a pruned node no longer has instead of skipping them, and keeps the cursor", async function () {
     // the node answers from its first block on
     const service = await reader([FIRST_AVAILABLE, FIRST_AVAILABLE + 1n]);

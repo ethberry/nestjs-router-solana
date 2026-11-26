@@ -1,4 +1,4 @@
-// The read cycle and routing of SolanaService on a fake chain: the RPC is stubbed with blocks built here, so each case
+// The read cycle and routing of SolanaRouterService on a fake chain: the RPC is stubbed with blocks built here, so each case
 // controls exactly which transactions are in which slot.
 import { jest } from "@jest/globals";
 import { Controller, Injectable, Logger } from "@nestjs/common";
@@ -8,10 +8,10 @@ import { Test } from "@nestjs/testing";
 import { EventPattern, Payload } from "@nestjs/microservices";
 import { CronExpression, SchedulerRegistry } from "@nestjs/schedule";
 
-import { BLOCK_EVENT, SOLANA_RPC, SolanaEventType } from "./solana.constants.js";
+import { BLOCK_EVENT, SOLANA_RPC, SolanaEventType } from "./solana-router.constants.js";
 import type { IBlockEvent, ILogEvent, ISolanaTransaction, ITransfer } from "./interfaces/index.js";
-import { SolanaModule } from "./solana.module.js";
-import { SolanaService } from "./solana.service.js";
+import { SolanaRouterModule } from "./solana-router.module.js";
+import { SolanaRouterService } from "./solana-router.service.js";
 
 const PAYER = "Payer111111111111111111111111111111111111111";
 const MERCHANT = "Merchant11111111111111111111111111111111111";
@@ -110,7 +110,7 @@ class TypedController {
 // A merchant transfer "deploys" a new address: the handler registers it, as a factory event handler does on EVM
 @Controller()
 class RegisteringController {
-  constructor(private readonly solanaService: SolanaService) {}
+  constructor(private readonly solanaService: SolanaRouterService) {}
 
   @EventPattern({ contractType: ContractType.MERCHANT, eventName: SolanaEventType.TRANSFER })
   public merchant(): void {
@@ -122,7 +122,7 @@ class RegisteringController {
 @Controller()
 class GrowingController {
   constructor(
-    private readonly solanaService: SolanaService,
+    private readonly solanaService: SolanaRouterService,
     private readonly received: Received,
   ) {}
 
@@ -156,7 +156,7 @@ class FailingController {
 @Controller()
 class DestroyingController {
   constructor(
-    private readonly solanaService: SolanaService,
+    private readonly solanaService: SolanaRouterService,
     private readonly received: Received,
   ) {}
 
@@ -185,7 +185,7 @@ async function reader(
   const module = await Test.createTestingModule({
     imports: [
       ConfigModule.forRoot({ ignoreEnvFile: true }),
-      SolanaModule.register({ fromSlot, chunkSize, debug: false, cron: CronExpression.EVERY_HOUR }),
+      SolanaRouterModule.register({ fromSlot, chunkSize, debug: false, cron: CronExpression.EVERY_HOUR }),
     ],
     providers: [Received, Failure],
     controllers,
@@ -196,10 +196,15 @@ async function reader(
   const logger = module.get(Logger);
   jest.spyOn(logger, "log").mockImplementation(() => undefined);
   const error = jest.spyOn(logger, "error").mockImplementation(() => undefined);
-  return { service: module.get(SolanaService), received: module.get(Received), error, module };
+  return { service: module.get(SolanaRouterService), received: module.get(Received), error, module };
 }
 
-describe("SolanaService routing", function () {
+describe("SolanaRouterService routing", function () {
+  // amounts and slots are bigints: the reader must deliver them in an app that has not patched BigInt for JSON
+  it("runs without a BigInt JSON patch", function () {
+    expect("toJSON" in BigInt.prototype).toBe(false);
+  });
+
   it("delivers a transfer of a watched address with its slot, signature, owner, asset and signed amount", async function () {
     const rpc = fakeChain(10n, { 5: [solTransfer("s1", PAYER, [MERCHANT], 1000n)] });
     const { service, received } = await reader(rpc, [RecordingController]);

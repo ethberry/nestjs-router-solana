@@ -9,14 +9,14 @@ import type { Commitment, Rpc, SolanaRpcApi } from "@solana/kit";
 import { CronJob } from "cron";
 
 import { getTransfers } from "./utils/get-transfers.js";
-import { BLOCK_EVENT, SOLANA_RPC, SolanaEventType } from "./solana.constants.js";
-import { MODULE_OPTIONS_TOKEN } from "./solana.module-definition.js";
+import { BLOCK_EVENT, SOLANA_RPC, SolanaEventType } from "./solana-router.constants.js";
+import { MODULE_OPTIONS_TOKEN } from "./solana-router.module-definition.js";
 import type {
   IBlockEvent,
   IContractOptions,
   IDiscoveredHandler,
   ILogEvent,
-  ISolanaModuleOptions,
+  ISolanaRouterModuleOptions,
   ISolanaTransaction,
   ITransfer,
 } from "./interfaces/index.js";
@@ -36,7 +36,7 @@ interface IRoutedEvent {
 }
 
 @Injectable()
-export class SolanaService {
+export class SolanaRouterService {
   private instanceId = (Math.random() + 1).toString(36).substring(7);
   private job?: CronJob;
   private running = false;
@@ -56,7 +56,7 @@ export class SolanaService {
     protected readonly metadataScanner: MetadataScanner,
     protected readonly reflector: Reflector,
     @Inject(MODULE_OPTIONS_TOKEN)
-    protected options: ISolanaModuleOptions,
+    protected options: ISolanaRouterModuleOptions,
     protected schedulerRegistry: SchedulerRegistry,
   ) {}
 
@@ -82,7 +82,7 @@ export class SolanaService {
           this.skippedTicks = Math.min(2 ** this.failures - 1, MAX_SKIPPED_TICKS);
           this.loggerService.error(
             `Run failed ${this.failures} time(s) in a row, next try in ${this.skippedTicks + 1} tick(s): ${String(e)}`,
-            `${SolanaService.name}-${this.instanceId}`,
+            `${SolanaRouterService.name}-${this.instanceId}`,
           );
         },
       );
@@ -171,7 +171,7 @@ export class SolanaService {
 
     this.loggerService.log(
       `Solana listener updated: ${contract.contractAddress.join(", ")}`,
-      `${SolanaService.name}-${this.instanceId}`,
+      `${SolanaRouterService.name}-${this.instanceId}`,
     );
   }
 
@@ -222,7 +222,7 @@ export class SolanaService {
     const handlers = this.getHandlerByPattern(route);
 
     if (!handlers.length) {
-      this.loggerService.log(`Handler not found for: ${route}`, `${SolanaService.name}-${this.instanceId}`);
+      this.loggerService.log(`Handler not found for: ${route}`, `${SolanaRouterService.name}-${this.instanceId}`);
       return;
     }
 
@@ -233,7 +233,7 @@ export class SolanaService {
     );
     for (const result of results) {
       if (result.status === "rejected") {
-        this.loggerService.error(result.reason, `${SolanaService.name}-${this.instanceId}`);
+        this.loggerService.error(result.reason, `${SolanaRouterService.name}-${this.instanceId}`);
       }
     }
   }

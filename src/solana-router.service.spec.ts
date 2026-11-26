@@ -7,10 +7,10 @@ import { EventPattern, Payload } from "@nestjs/microservices";
 import { CronExpression } from "@nestjs/schedule";
 import { generateKeyPairSigner } from "@solana/kit";
 
-import { BLOCK_EVENT, NATIVE, SolanaEventType } from "./solana.constants.js";
+import { BLOCK_EVENT, NATIVE, SolanaEventType } from "./solana-router.constants.js";
 import type { IBlockEvent, ILogEvent, ITransfer } from "./interfaces/index.js";
-import { SolanaModule } from "./solana.module.js";
-import { SolanaService } from "./solana.service.js";
+import { SolanaRouterModule } from "./solana-router.module.js";
+import { SolanaRouterService } from "./solana-router.service.js";
 import {
   RPC_URL,
   SOL,
@@ -73,12 +73,12 @@ async function startReader(
   const module = await Test.createTestingModule({
     imports: [
       ConfigModule.forRoot({ ignoreEnvFile: true, load: [() => ({ SOLANA_RPC_URL: RPC_URL })] }),
-      SolanaModule.register(defaultCommitment ? options : { ...options, commitment: "confirmed" }),
+      SolanaRouterModule.register(defaultCommitment ? options : { ...options, commitment: "confirmed" }),
     ],
     providers: [Received],
     controllers: [TestController],
   }).compile();
-  const service = module.get(SolanaService);
+  const service = module.get(SolanaRouterService);
   for (const [contractType, contractAddress] of Object.entries(watch)) {
     service.updateRegistry({ contractType, contractAddress });
   }
@@ -88,7 +88,7 @@ async function startReader(
 
 const currentSlot = () => rpc.getSlot({ commitment: "confirmed" }).send();
 
-describe("SolanaService on the local node", function () {
+describe("SolanaRouterService on the local node", function () {
   let module: TestingModule | undefined;
 
   afterEach(async function () {

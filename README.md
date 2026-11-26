@@ -8,22 +8,22 @@ Reads Solana slot by slot and hands the transfers of watched addresses to Nest c
 
 ## Exports
 
-- `SolanaModule` (`register` / `registerAsync` with `ISolanaModuleOptions`), `SolanaService`.
-- `SolanaService`: `updateRegistry({ contractType, contractAddress })`, `getRegistry()`, `getLastProcessedSlot()`, `listen()` (one run; the cron calls it).
+- `SolanaRouterModule` (`register` / `registerAsync` with `ISolanaRouterModuleOptions`), `SolanaRouterService`.
+- `SolanaRouterService`: `updateRegistry({ contractType, contractAddress })`, `getRegistry()`, `getLastProcessedSlot()`, `listen()` (one run; the cron calls it).
 - `SolanaEventType.TRANSFER`, `BLOCK_EVENT`, `NATIVE`, `SOLANA_RPC` (the RPC provider token), `getTransfers(tx)`.
-- Types: `ITransfer`, `IBlockEvent`, `ILogEvent`, `IContractOptions`, `ISolanaTransaction`, `ISolanaModuleOptions`.
+- Types: `ITransfer`, `IBlockEvent`, `ILogEvent`, `IContractOptions`, `ISolanaTransaction`, `ISolanaRouterModuleOptions`.
 
 ## Configuration
 
 - `SOLANA_RPC_URL`: the JSON-RPC endpoint.
-- Module options (`ISolanaModuleOptions`): `fromSlot` (where to start), `commitment` (`finalized` by default), `chunkSize` (slots per run, default 100; also the most a failed run reads again), `cron`, `debug`. After a failed run the next cron ticks are skipped, doubling up to 15.
+- Module options (`ISolanaRouterModuleOptions`): `fromSlot` (where to start), `commitment` (`finalized` by default), `chunkSize` (slots per run, default 100; also the most a failed run reads again), `cron`, `debug`. After a failed run the next cron ticks are skipped, doubling up to 15.
 
 ## Example
 
 ```ts
 @Module({
   imports: [
-    SolanaModule.registerAsync({
+    SolanaRouterModule.registerAsync({
       imports: [ConfigModule, SettingsModule],
       inject: [SettingsService],
       useFactory: async (settings: SettingsService) => ({
@@ -39,10 +39,10 @@ export class PaymentModule {}
 
 @Controller()
 export class PaymentController {
-  constructor(private readonly solanaService: SolanaService, private readonly settings: SettingsService) {}
+  constructor(private readonly solanaRouterService: SolanaRouterService, private readonly settings: SettingsService) {}
 
   public onModuleInit() {
-    this.solanaService.updateRegistry({ contractType: "MERCHANT", contractAddress: [merchantWallet] });
+    this.solanaRouterService.updateRegistry({ contractType: "MERCHANT", contractAddress: [merchantWallet] });
   }
 
   @EventPattern({ contractType: "MERCHANT", eventName: SolanaEventType.TRANSFER })
