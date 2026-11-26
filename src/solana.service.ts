@@ -92,10 +92,10 @@ export class SolanaService {
   }
 
   // Reads the next range of slots up to the head at the commitment and hands every transfer to the handlers, one at a
-  // time in chain order. The whole range is read before any handler runs, so a node error delivers nothing. The first
-  // failing handler stops the run: it throws, the cursor stays, and the next run reads the same range again from its
-  // start, so the order holds and handlers must be idempotent (by signature). Only one run at a time: a call while a
-  // run is going returns at once.
+  // time in chain order. The whole range is read before any handler runs, so a node error delivers nothing and the next
+  // run reads the same range again. Each event is delivered once: a handler that fails is logged and the run goes on
+  // (what to do with an event it could not handle is the handler's business; `signature` identifies it). Only one run
+  // at a time: a call while a run is going returns at once.
   public async listen(): Promise<void> {
     if (this.running) {
       return;
@@ -140,11 +140,7 @@ export class SolanaService {
           if (this.destroyed) {
             return;
           }
-          if (!(await this.call(event))) {
-            throw new Error(
-              `A handler failed in slots ${fromSlot}..${toSlot}: the range is read again on the next run`,
-            );
-          }
+          await this.call(event);
         }
         pass = this.notRead(read);
       }
@@ -154,8 +150,8 @@ export class SolanaService {
       }
       const args: IBlockEvent = { slot: toSlot };
       const blockEvent = { pattern: blockPattern, description: { name: BLOCK_EVENT, args }, context: args };
-      if (this.hasHandler(blockPattern) && !(await this.call(blockEvent))) {
-        throw new Error(`The block handler failed for slot ${toSlot}: the range is read again on the next run`);
+      if (this.hasHandler(blockPattern)) {
+        await this.call(blockEvent);
       }
       this.lastProcessedSlot = toSlot;
       this.options.fromSlot = toSlot + 1n;
@@ -219,15 +215,15 @@ export class SolanaService {
     return methods.filter(method => method.meta.some(meta => transformPatternToRoute(meta) === route));
   }
 
-  // Runs every handler of the event; true when all succeeded. A handler that throws (also synchronously) or rejects is
-  // logged and does not stop the others.
-  protected async call({ pattern, description, context }: IRoutedEvent): Promise<boolean> {
+  // Runs every handler of the event. A handler that throws (also synchronously) or rejects is logged and does not stop
+  // the others or the run.
+  protected async call({ pattern, description, context }: IRoutedEvent): Promise<void> {
     const route = transformPatternToRoute(pattern);
     const handlers = this.getHandlerByPattern(route);
 
     if (!handlers.length) {
       this.loggerService.log(`Handler not found for: ${route}`, `${SolanaService.name}-${this.instanceId}`);
-      return true;
+      return;
     }
 
     const results = await Promise.allSettled(
@@ -235,14 +231,11 @@ export class SolanaService {
         Promise.resolve().then(() => (handler.bind(instance) as MessageHandler)(description, context)),
       ),
     );
-    let ok = true;
     for (const result of results) {
       if (result.status === "rejected") {
-        ok = false;
         this.loggerService.error(result.reason, `${SolanaService.name}-${this.instanceId}`);
       }
     }
-    return ok;
   }
 
   private hasHandler(pattern: Record<string, string>): boolean {

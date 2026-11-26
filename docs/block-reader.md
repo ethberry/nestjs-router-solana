@@ -15,7 +15,7 @@
 
 `init()` (from `SolanaModule.onModuleInit`) registers a cron job (`solanaListener_<id>` in `SchedulerRegistry`). A tick starts `listen()`.
 
-- After a failed run the next ticks are skipped, doubling: 1, 3, 7, up to 15 ticks, so after a node outage the reader tries again within 16 ticks. A tick that finds a run the app started itself still going does nothing and does not touch the count. A handler that keeps failing on one event therefore does not re-read the range on every tick. Every failure is logged as an error with its count (`Run failed N time(s) in a row, next try in M tick(s): …`). A successful run resets the count.
+- After a failed run (a node error, the history check) the next ticks are skipped, doubling: 1, 3, 7, up to 15 ticks, so after a node outage the reader tries again within 16 ticks. A tick that finds a run the app started itself still going does nothing and does not touch the count. A failing handler does not fail the run. Every failure is logged as an error with its count (`Run failed N time(s) in a row, next try in M tick(s): …`). A successful run resets the count.
 - `listen()` runs one range at a time: a call while a run is going (a cron tick, or the app calling it) returns at once.
 
 1. Nothing happens while the registry is empty.
@@ -26,15 +26,15 @@
 6. The **whole range is read before any handler runs**. An RPC error in the middle of a range (a 429 of a public node, a timeout) therefore delivers nothing; the next run reads the range again.
 7. The events of the range go to the handlers **one at a time, in chain order** (slot, then position in the block).
 8. Passes: a handler may register a new address (`updateRegistry`) while the range is handled. After all events of a pass, the range is read again for the addresses that appeared during it, until none appears. The new address gets its transfers of the whole range, earlier slots included. A transaction goes to a contract type at most once per range, also when a later pass adds another of its addresses to that type.
-9. The **first failing handler stops the run**: the other handlers of that event still run, the later events wait. The run throws (`A handler failed in slots a..b: the range is read again on the next run`); the cursor stays, and the next run delivers the range again from its start, so the order of events holds.
-10. Otherwise the `block` event (`{ eventName: "block" }`, args `{ slot: to }`) goes to its handlers, if there are any. If it fails, the run throws and the cursor stays.
+9. A handler that throws (also synchronously) or rejects is **logged and skipped**: the other handlers of that event and the later events still run, and the event is not delivered again.
+10. Then the `block` event (`{ eventName: "block" }`, args `{ slot: to }`) goes to its handlers, if there are any, after every transfer handler of the range has finished. A failing block handler is logged like any other.
 11. The cursor moves: `fromSlot` becomes `to + 1`, `getLastProcessedSlot()` returns `to` (−1 before the first range).
 
 ### Delivery guarantee
 
-At least once. A range is delivered again after a failed handler, a failed block handler, or a restart before the app saved the cursor. **Handlers must be idempotent by `signature`** (a payment recorded once per signature). Nothing is lost: the cursor never moves past a range whose handlers did not all succeed.
+Each event is delivered once. The reader never moves past a range it could not read (a node error ends the run before any handler; the next run reads the range again), but it does not hold the cursor for a handler: a handler that fails is logged and its event is not delivered again. What to do with an event it could not handle (retry inside, an outbox, a dead-letter record) is the handler's business; `signature` identifies the transaction.
 
-A handler that always fails on one event (a poison event) stops the reader at that range: it is retried with the growing pause above and logged on every try, until the handler is fixed. So a handler must **not throw for a business rejection** (an unknown memo, a wrong amount): it records the rejection and returns. It throws only for a failure a retry can fix (the database is down).
+An event can still come twice after a restart before the app saved the cursor (the range since the last save is read again), so a handler that records payments keeps them unique by `signature`.
 
 ### Shutdown
 
@@ -74,6 +74,6 @@ An address becomes an account only with the rent-exempt minimum. A first transfe
   - a token transfer into an existing token account, routed to its owner, whom the transaction does not name;
   - the default commitment: the transfer arrives, and the reader never passes the finalized slot;
   - a restart: a second reader started from the cursor of the first one's block event gets the transfer sent while it was down, and not the one already handled.
-- `src/solana.routing.spec.ts` (a fake chain: the RPC stubbed with blocks built in the test): delivery and its args, unwatched and wrong-case addresses, one delivery per contract type, several contract types, registry merge, an address registered by a handler mid-range (whole range, once, no repeat when its type grows), the block event after the handlers with the range's last slot, the cursor without a block handler, an empty registry, a head behind the cursor, `chunkSize`, a handler that rejects or throws (the event's other handlers run, later events wait, cursor stays, the range comes again in order), a failing block handler, a node error mid-range (nothing delivered, the whole range next time), a missing block, a second `listen()` during a run, the growing pause after failed runs, `destroy` during a run.
+- `src/solana.routing.spec.ts` (a fake chain: the RPC stubbed with blocks built in the test): delivery and its args, unwatched and wrong-case addresses, one delivery per contract type, several contract types, registry merge, an address registered by a handler mid-range (whole range, once, no repeat when its type grows), the block event after the handlers with the range's last slot, the cursor without a block handler, an empty registry, a head behind the cursor, `chunkSize`, a handler that rejects or throws (logged; the event's other handlers and later events run, the cursor moves, nothing comes again), a failing block handler (logged, the cursor moves), a node error mid-range (nothing delivered, the whole range next time), a missing block, a second `listen()` during a run, the growing pause after failed runs (a node that is down), `destroy` during a run.
 - `src/solana.history.spec.ts` (stubbed RPC): a cursor older than a pruned node's first block stops the reader and keeps the cursor; a node that serves the older slots is read on.
 - `src/utils/get-transfers.spec.ts`: the balance arithmetic, fee, failed transaction, `err` left out by the RPC, decimals, new and closed token accounts, Memo v1 and inner-instruction memos.

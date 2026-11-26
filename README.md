@@ -50,7 +50,7 @@ export class PaymentController {
     // event.args: { slot, signature, owner, asset ("native" or the mint), amount (signed), decimals, memo }
   }
 
-  // after every handler of the range succeeded: save the cursor
+  // after every handler of the range has finished: save the cursor
   @EventPattern({ eventName: BLOCK_EVENT })
   public block(@Payload() event: ILogEvent<IBlockEvent>) {
     return this.settings.update("SOLANA_SLOT", event.args.slot.toString());
@@ -60,14 +60,13 @@ export class PaymentController {
 
 ## Writing handlers
 
-- **Idempotent by `signature`.** Delivery is at least once: a range whose handlers did not all succeed (a handler threw or rejected, the cursor save failed) is delivered again on the next run, and so is the range after a restart before the cursor was saved. Record a payment once per signature.
+- **Each event once.** A handler that throws or rejects is logged and skipped; its event is not delivered again. Handle your own failures (retry inside the handler, an outbox). After a restart before the cursor was saved, the range since the last save comes again: record a payment once per `signature`.
 - A watched address (a wallet, or a Solana Pay reference) makes the reader hand over **every** balance change of each transaction that names it: one `Transfer` per change (the payer's minus, the receiver's plus, the rent of a token account created on the way). For a payment to a merchant, keep `owner === merchant` and the expected `asset`; the same transaction comes as several events.
 - A token payment names the merchant's token account, not always the merchant's wallet; the reader still routes it, because it also matches the owner of a changed token balance.
 - The reference of a payment: the second handler argument is the transaction as `getBlock` returned it; its keys are `transaction.message.accountKeys[].pubkey`. Register the merchants' wallets (few, stable), not one reference per payment.
 - A failed transaction (`meta.err` set) never gives a `Transfer`; a transaction whose RPC left `err` out counts as successful.
 - Amounts are signed base units; `decimals` is 9 for SOL and the mint's for a token. The fee payer's native amount excludes the fee.
-- A throwing handler does not stop the reader; it makes the range repeat until it succeeds. Throw only for a failure that a retry can fix (the database is down), not for a payment you reject.
-- Save the cursor in the `block` handler: it runs only after every transfer handler of the range succeeded.
+- Save the cursor in the `block` handler: it runs after every transfer handler of the range has finished.
 - When the cursor is older than the node's history, the reader stops with an error instead of skipping slots.
 
 How it works, in full: [docs/block-reader.md](docs/block-reader.md).
