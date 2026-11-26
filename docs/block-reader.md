@@ -1,11 +1,11 @@
 # Block reader
 
-`SolanaService` reads Solana slot by slot and turns every transaction that names a watched address into `Transfer` events for Nest controllers (`@EventPattern({ contractType, eventName: "Transfer" })`). It is the Solana counterpart of `@ethberry/nestjs-router-eth`: the same module shape, registry and patterns.
+`SolanaRouterService` reads Solana slot by slot and turns every transaction that names a watched address into `Transfer` events for Nest controllers (`@EventPattern({ contractType, eventName: "Transfer" })`). It is the Solana counterpart of `@ethberry/nestjs-router-eth`: the same module shape, registry and patterns.
 
 ## Configuration
 
 - `SOLANA_RPC_URL` (env, through `ConfigService`): the JSON-RPC endpoint the `SOLANA_RPC` provider (`createSolanaRpc` of `@solana/kit`) uses.
-- Module options (`ISolanaModuleOptions`, `SolanaModule.register` / `registerAsync`):
+- Module options (`ISolanaRouterModuleOptions`, `SolanaRouterModule.register` / `registerAsync`):
   - `fromSlot`: the first slot to read; the app passes its saved cursor + 1.
   - `commitment`: `finalized` by default. `confirmed` is faster, but a confirmed slot can still be rolled back; use it only where a rolled-back transfer does no harm (tests).
   - `chunkSize`: slots per run (one `getBlocks` call), default 100 (about 40 s of chain). It is also the most a failed run reads again.
@@ -13,7 +13,7 @@
 
 ## Cycle (`listen`)
 
-`init()` (from `SolanaModule.onModuleInit`) registers a cron job (`solanaListener_<id>` in `SchedulerRegistry`). A tick starts `listen()`.
+`init()` (from `SolanaRouterModule.onModuleInit`) registers a cron job (`solanaListener_<id>` in `SchedulerRegistry`). A tick starts `listen()`.
 
 - After a failed run (a node error, the history check) the next ticks are skipped, doubling: 1, 3, 7, up to 15 ticks, so after a node outage the reader tries again within 16 ticks. A tick that finds a run the app started itself still going does nothing and does not touch the count. A failing handler does not fail the run. Every failure is logged as an error with its count (`Run failed N time(s) in a row, next try in M tick(s): …`). A successful run resets the count.
 - `listen()` runs one range at a time: a call while a run is going (a cron tick, or the app calling it) returns at once.
@@ -38,7 +38,7 @@ An event can still come twice after a restart before the app saved the cursor (t
 
 ### Shutdown
 
-`destroy()` (from `SolanaModule.onModuleDestroy`) stops and removes the cron job. A run in progress stops before its next handler and does not move the cursor.
+`destroy()` (from `SolanaRouterModule.onModuleDestroy`) stops and removes the cron job. A run in progress stops before its next handler and does not move the cursor.
 
 ## Transfers (`getTransfers`)
 
@@ -69,11 +69,11 @@ An address becomes an account only with the rent-exempt minimum. A first transfe
 
 ## Tests
 
-- `src/solana.service.spec.ts`, against the node of `docker-compose.yml` (`nestjs-solana-node`):
+- `src/solana-router.service.spec.ts`, against the node of `docker-compose.yml` (`nestjs-solana-node`):
   - SOL with a memo, a failing transfer below rent, and a token transfer with a reference into a token account created in the same transaction, routed to a wallet, a reference and the address of the failing transfer;
   - a token transfer into an existing token account, routed to its owner, whom the transaction does not name;
   - the default commitment: the transfer arrives, and the reader never passes the finalized slot;
   - a restart: a second reader started from the cursor of the first one's block event gets the transfer sent while it was down, and not the one already handled.
-- `src/solana.routing.spec.ts` (a fake chain: the RPC stubbed with blocks built in the test): delivery and its args, unwatched and wrong-case addresses, one delivery per contract type, several contract types, registry merge, an address registered by a handler mid-range (whole range, once, no repeat when its type grows), the block event after the handlers with the range's last slot, the cursor without a block handler, an empty registry, a head behind the cursor, `chunkSize`, a handler that rejects or throws (logged; the event's other handlers and later events run, the cursor moves, nothing comes again), a failing block handler (logged, the cursor moves), a node error mid-range (nothing delivered, the whole range next time), a missing block, a second `listen()` during a run, the growing pause after failed runs (a node that is down), `destroy` during a run.
-- `src/solana.history.spec.ts` (stubbed RPC): a cursor older than a pruned node's first block stops the reader and keeps the cursor; a node that serves the older slots is read on.
+- `src/solana-router.routing.spec.ts` (a fake chain: the RPC stubbed with blocks built in the test): delivery and its args, unwatched and wrong-case addresses, one delivery per contract type, several contract types, registry merge, an address registered by a handler mid-range (whole range, once, no repeat when its type grows), the block event after the handlers with the range's last slot, the cursor without a block handler, an empty registry, a head behind the cursor, `chunkSize`, a handler that rejects or throws (logged; the event's other handlers and later events run, the cursor moves, nothing comes again), a failing block handler (logged, the cursor moves), a node error mid-range (nothing delivered, the whole range next time), a missing block, a second `listen()` during a run, the growing pause after failed runs (a node that is down), `destroy` during a run.
+- `src/solana-router.history.spec.ts` (stubbed RPC): a cursor older than a pruned node's first block stops the reader and keeps the cursor; a node that serves the older slots is read on.
 - `src/utils/get-transfers.spec.ts`: the balance arithmetic, fee, failed transaction, `err` left out by the RPC, decimals, new and closed token accounts, Memo v1 and inner-instruction memos.

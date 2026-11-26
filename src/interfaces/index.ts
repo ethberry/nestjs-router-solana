@@ -1,6 +1,6 @@
 import { CronExpression } from "@nestjs/schedule";
 
-export interface ISolanaModuleOptions {
+export interface ISolanaRouterModuleOptions {
   // the first slot to read; the app keeps the last processed one (the block event) and passes the next one here
   fromSlot: bigint;
   // "finalized" by default: a transfer is never reported before it can no longer be rolled back

@@ -1,4 +1,4 @@
-import { NATIVE } from "../solana.constants.js";
+import { NATIVE } from "../solana-router.constants.js";
 import type { ISolanaTransaction, ITokenBalance, ITransfer } from "../interfaces/index.js";
 
 // the SPL Memo program, its current version and the first one

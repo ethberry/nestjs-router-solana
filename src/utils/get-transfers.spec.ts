@@ -1,4 +1,4 @@
-import { NATIVE } from "../solana.constants.js";
+import { NATIVE } from "../solana-router.constants.js";
 import type { ISolanaTransaction } from "../interfaces/index.js";
 import { getTransfers } from "./get-transfers.js";
 

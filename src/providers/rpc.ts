@@ -2,7 +2,7 @@ import { ConfigService } from "@nestjs/config";
 import { createSolanaRpc } from "@solana/kit";
 import type { Rpc, SolanaRpcApi } from "@solana/kit";
 
-import { SOLANA_RPC } from "../solana.constants.js";
+import { SOLANA_RPC } from "../solana-router.constants.js";
 
 export const solanaRpcProvider = {
   provide: SOLANA_RPC,
