@@ -380,42 +380,37 @@ describe("SolanaService routing", function () {
     ["rejects", "reject"],
     ["throws synchronously", "throw"],
   ] as const)(
-    "a handler that %s: the other handlers of the event run, the run stops there, the next run starts the range over",
+    "a handler that %s is logged; the other handlers and the later events run, the cursor moves, nothing comes again",
     async function (_how, failing) {
       const rpc = fakeChain(10n, { 5: [solTransfer("s1", PAYER, [MERCHANT], 1000n)] });
       const { service, received, error, module } = await reader(rpc, [FailingController, TypedController]);
       module.get(Failure).failing = failing;
       service.updateRegistry({ contractType: ContractType.MERCHANT, contractAddress: [MERCHANT] });
 
-      const failed = await service.listen().catch((e: Error) => e.message);
-      const deliveredInFailedRun = [...received.log];
-      const cursorAfterFailure = service.getLastProcessedSlot();
-      // the handler recovers (the database is back): the range comes again from its start, in order
+      await service.listen();
+      const cursorAfterRun = service.getLastProcessedSlot();
+      // the handler recovers: the range is not read again, its events are not delivered again
       module.get(Failure).failing = null;
       await service.listen();
 
-      expect(failed).toEqual("A handler failed in slots 1..10: the range is read again on the next run");
       expect(error).toHaveBeenCalledWith(
         new Error(failing === "throw" ? "handler threw" : "handler failed"),
         expect.any(String),
       );
-      // the failing event's other handler ran; the merchant's change, after it, waited
-      expect(deliveredInFailedRun).toEqual([`MERCHANT s1 ${PAYER}`]);
-      expect(cursorAfterFailure).toEqual(-1n);
-      expect(received.log).toEqual([`MERCHANT s1 ${PAYER}`, `MERCHANT s1 ${PAYER}`, `MERCHANT s1 ${MERCHANT}`]);
-      expect(service.getLastProcessedSlot()).toEqual(10n);
+      expect(cursorAfterRun).toEqual(10n);
+      expect(received.log).toEqual([`MERCHANT s1 ${PAYER}`, `MERCHANT s1 ${MERCHANT}`]);
     },
   );
 
-  it("keeps the cursor when the block handler (the cursor save) fails", async function () {
+  it("moves the cursor when the block handler fails, and logs it", async function () {
     const rpc = fakeChain(10n, { 5: [solTransfer("s1", PAYER, [MERCHANT], 1000n)] });
-    const { service } = await reader(rpc, [TypedController, FailingBlockController]);
+    const { service, error } = await reader(rpc, [TypedController, FailingBlockController]);
     service.updateRegistry({ contractType: ContractType.MERCHANT, contractAddress: [MERCHANT] });
 
-    const failed = await service.listen().catch((e: Error) => e.message);
+    await service.listen();
 
-    expect(failed).toEqual("The block handler failed for slot 10: the range is read again on the next run");
-    expect(service.getLastProcessedSlot()).toEqual(-1n);
+    expect(error).toHaveBeenCalledWith(new Error("cursor not saved"), expect.any(String));
+    expect(service.getLastProcessedSlot()).toEqual(10n);
   });
 
   it("delivers nothing when the node fails in the middle of a range, and the whole range on the next run", async function () {
@@ -473,7 +468,9 @@ describe("SolanaService routing", function () {
 
   it("after failed runs skips the next ticks, doubling the pause, and logs every failure", async function () {
     const rpc = fakeChain(10n, { 5: [solTransfer("s1", PAYER, [MERCHANT], 1n)] });
-    const { service, error, module } = await reader(rpc, [FailingController]);
+    // the node is down: every run fails on the head
+    rpc.getSlot.mockImplementation(() => ({ send: () => Promise.reject(new Error("node down")) }));
+    const { service, error, module } = await reader(rpc, [RecordingController]);
     service.updateRegistry({ contractType: ContractType.MERCHANT, contractAddress: [MERCHANT] });
     service.init();
     const job = [...module.get(SchedulerRegistry).getCronJobs().values()][0];
